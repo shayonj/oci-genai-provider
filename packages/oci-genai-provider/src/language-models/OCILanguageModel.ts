@@ -40,7 +40,7 @@ import {
   getInputGuardrailText,
   toJSONGuardrailsMetadata,
 } from '../shared/guardrails';
-import { doOpenAICompatibleStream } from './openai-compatible';
+import { doOpenAICompatibleStream, doSignedOpenAICompatibleStream } from './openai-compatible';
 
 type ChatRequest =
   | OCIModel.GenericChatRequest
@@ -91,14 +91,6 @@ export class OCILanguageModel implements LanguageModelV3 {
         modelType: 'languageModel',
       });
     }
-  }
-
-  private hasAPIKey(): boolean {
-    if (this.config.apiKey) return true;
-    for (const envVar of ['OCI_GENAI_API_KEY', 'OCI_API_KEY', 'OPENAI_API_KEY'] as const) {
-      if (process.env[envVar]) return true;
-    }
-    return false;
   }
 
   private async getClient(endpointOverride?: string): Promise<GenerativeAiInferenceClient> {
@@ -345,12 +337,23 @@ export class OCILanguageModel implements LanguageModelV3 {
       });
     }
 
-    // Prefer the OpenAI-compatible endpoint when an API key is available.
-    // The native GENERIC endpoint does not populate tool-call arguments in
-    // streaming responses, so non-Cohere models with tools must go through
-    // the OpenAI-compatible path to get usable tool calls.
-    if (isAPIKeyAuth(this.config) || (apiFormat === 'GENERIC' && this.hasAPIKey())) {
+    if (isAPIKeyAuth(this.config)) {
       return doOpenAICompatibleStream(this.modelId, this.config, options, ociOptions, warnings);
+    }
+
+    // The native GENERIC endpoint does not populate tool-call arguments
+    // in streaming responses. Route GENERIC models through the OpenAI-
+    // compatible endpoint using OCI request signing so tool calling works
+    // with config_file auth.
+    if (apiFormat === 'GENERIC') {
+      const client = await this.getClient(ociOptions?.endpoint);
+      const compartmentId = resolveCompartmentId(
+        getCompartmentId(this.config),
+        ociOptions?.compartmentId
+      );
+      return doSignedOpenAICompatibleStream(
+        this.modelId, client, compartmentId, options, ociOptions, warnings
+      );
     }
 
     const client = await this.getClient(ociOptions?.endpoint);

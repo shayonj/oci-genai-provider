@@ -9,6 +9,8 @@ import { createParser, type EventSourceMessage } from 'eventsource-parser';
 import { convertToOCIMessages, type OCIMessage } from './converters/messages';
 import { convertToOCIToolChoice, convertToOCITools } from './converters/tools';
 import { getAPIKey, getCompartmentId, getOpenAICompatibleEndpoint } from '../auth/index.js';
+import { composeRequest } from 'oci-common';
+import type { GenerativeAiInferenceClient } from 'oci-generativeaiinference';
 import type { OCIConfig, OCIProviderOptions } from '../types';
 
 interface OpenAICompatibleMessageContentPart {
@@ -397,4 +399,70 @@ function createOpenAICompatibleResponseStream(
       }
     },
   });
+}
+
+/**
+ * Like doOpenAICompatibleStream but uses OCI request signing instead of a
+ * Bearer API key. This lets config_file auth users hit the OpenAI-compatible
+ * endpoint, which correctly returns tool-call arguments (the native GENERIC
+ * endpoint does not).
+ */
+export async function doSignedOpenAICompatibleStream(
+  modelId: string,
+  client: GenerativeAiInferenceClient,
+  compartmentId: string,
+  options: LanguageModelV3CallOptions,
+  ociOptions: OCIProviderOptions | undefined,
+  warnings: SharedV3Warning[]
+): Promise<LanguageModelV3StreamResult> {
+  const promptMessages = convertToOCIMessages(options.prompt);
+  const body = createOpenAICompatibleRequestBody(
+    modelId, promptMessages, options, ociOptions
+  );
+  const bodyString = JSON.stringify(body);
+
+  const request = await composeRequest({
+    baseEndpoint: (client as unknown as { endpoint: string }).endpoint,
+    defaultHeaders: {},
+    path: '/actions/v1/chat/completions',
+    method: 'POST',
+    bodyContent: bodyString,
+    pathParams: {},
+    headerParams: {},
+    queryParams: {},
+  });
+  request.headers.set('CompartmentId', compartmentId);
+
+  const httpClient = (client as unknown as { _httpClient: {
+    signer: { signHttpRequest: (r: unknown) => Promise<void> };
+  } })._httpClient;
+  await httpClient.signer.signHttpRequest(request);
+
+  const headers: Record<string, string> = {};
+  for (const [k, v] of request.headers) {
+    headers[k] = v;
+  }
+
+  const response = await fetch(request.uri, {
+    method: 'POST',
+    headers,
+    body: bodyString,
+  });
+
+  if (!response.ok || !response.body) {
+    const errorBody = await response.text().catch(() => '');
+    throw new Error(
+      `OCI OpenAI-compatible request failed (${response.status} ${response.statusText})${errorBody ? `: ${errorBody}` : ''}`
+    );
+  }
+
+  const requestId = response.headers.get('opc-request-id') ?? undefined;
+
+  return {
+    request: { body: bodyString },
+    response: {
+      headers: requestId ? { 'opc-request-id': requestId } : undefined,
+    },
+    stream: createOpenAICompatibleResponseStream(response, requestId, warnings),
+  };
 }
