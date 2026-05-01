@@ -80,6 +80,11 @@ export async function* parseSSEStream(
   const parts: StreamPart[] = [];
   let yieldedIndex = 0;
 
+  // Accumulate tool calls across streaming chunks (the OCI native API may
+  // deliver tool-call arguments incrementally, like the OpenAI streaming
+  // format). Keyed by index within the current response.
+  const pendingToolCalls = new Map<number, { id: string; name: string; arguments: string }>();
+
   // Buffer for finish event to combine reason and usage
   let lastFinishReason: UnifiedFinishReason = 'stop';
   let lastRawFinishReason = 'STOP';
@@ -144,25 +149,26 @@ export async function* parseSSEStream(
           }
         }
 
-        // Check for tool calls (GENERIC or COHERE format)
+        // Accumulate tool calls across streaming chunks. The OCI native
+        // API may split tool-call arguments across multiple SSE events.
         const toolCalls = parsed.message?.toolCalls ?? parsed.toolCalls;
         if (toolCalls && toolCalls.length > 0) {
-          for (const toolCall of toolCalls) {
+          for (let idx = 0; idx < toolCalls.length; idx++) {
+            const toolCall = toolCalls[idx];
+            const current = pendingToolCalls.get(idx) ?? {
+              id: toolCall.id ?? `tool-call-${Date.now()}-${idx}`,
+              name: '',
+              arguments: '',
+            };
+            current.id = toolCall.id ?? current.id;
             if (toolCall.function?.name) {
-              parts.push({
-                type: 'tool-call',
-                toolCallId: toolCall.id ?? `tool-call-${Date.now()}`,
-                toolName: toolCall.function.name,
-                input: toolCall.function.arguments ?? '{}',
-              });
+              current.name = toolCall.function.name;
+              current.arguments += toolCall.function.arguments ?? '';
             } else if (toolCall.name) {
-              parts.push({
-                type: 'tool-call',
-                toolCallId: `tool-call-${Date.now()}`,
-                toolName: toolCall.name,
-                input: JSON.stringify(toolCall.parameters ?? {}),
-              });
+              current.name = toolCall.name;
+              current.arguments = JSON.stringify(toolCall.parameters ?? {});
             }
+            pendingToolCalls.set(idx, current);
           }
         }
 
@@ -218,6 +224,18 @@ export async function* parseSSEStream(
     // Yield any parts that were parsed
     while (yieldedIndex < parts.length) {
       yield parts[yieldedIndex++];
+    }
+  }
+
+  // Emit accumulated tool calls before the finish event
+  for (const toolCall of pendingToolCalls.values()) {
+    if (toolCall.name) {
+      yield {
+        type: 'tool-call' as const,
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+        input: toolCall.arguments || '{}',
+      };
     }
   }
 
