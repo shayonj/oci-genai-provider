@@ -93,6 +93,14 @@ export class OCILanguageModel implements LanguageModelV3 {
     }
   }
 
+  private hasAPIKey(): boolean {
+    if (this.config.apiKey) return true;
+    for (const envVar of ['OCI_GENAI_API_KEY', 'OCI_API_KEY', 'OPENAI_API_KEY'] as const) {
+      if (process.env[envVar]) return true;
+    }
+    return false;
+  }
+
   private async getClient(endpointOverride?: string): Promise<GenerativeAiInferenceClient> {
     const resolvedEndpoint = resolveEndpoint(this.config.endpoint, endpointOverride);
 
@@ -337,7 +345,11 @@ export class OCILanguageModel implements LanguageModelV3 {
       });
     }
 
-    if (isAPIKeyAuth(this.config)) {
+    // Prefer the OpenAI-compatible endpoint when an API key is available.
+    // The native GENERIC endpoint does not populate tool-call arguments in
+    // streaming responses, so non-Cohere models with tools must go through
+    // the OpenAI-compatible path to get usable tool calls.
+    if (isAPIKeyAuth(this.config) || (apiFormat === 'GENERIC' && this.hasAPIKey())) {
       return doOpenAICompatibleStream(this.modelId, this.config, options, ociOptions, warnings);
     }
 
