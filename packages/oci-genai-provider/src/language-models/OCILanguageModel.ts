@@ -31,7 +31,6 @@ import {
 import { resolveRequestOptions } from '../shared/request-options';
 import {
   type OCIApiFormat,
-  toOCIReasoningEffort,
   createThinkingConfig,
 } from '../shared/oci-sdk-types';
 import {
