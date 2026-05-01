@@ -431,8 +431,10 @@ export class OCILanguageModel implements LanguageModelV3 {
           ...(hasToolResults ? { isForceSingleStep: true } : {}),
         } as OCIModel.CohereChatRequest;
       } else {
+        // GENERIC format is routed through doSignedOpenAICompatibleStream
+        // above, so this branch handles any future formats.
         chatRequest = {
-          apiFormat,
+          apiFormat: apiFormat as string,
           messages: messages.map((m) => ({
             role: m.role,
             content: m.content as OCIModel.ChatContent[],
@@ -443,12 +445,6 @@ export class OCILanguageModel implements LanguageModelV3 {
           ...toolParams,
           stop: options.stopSequences,
         } as OCIModel.GenericChatRequest;
-      }
-
-      if (ociOptions?.reasoningEffort && apiFormat === 'GENERIC') {
-        const genericReq = chatRequest as OCIModel.GenericChatRequest;
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- OCI SDK type mismatch
-        genericReq.reasoningEffort = toOCIReasoningEffort(ociOptions.reasoningEffort) as any;
       }
 
       if (ociOptions?.thinking && (apiFormat === 'COHEREV2' || apiFormat === 'COHERE')) {
