@@ -128,12 +128,18 @@ function createOpenAICompatibleRequestBody(
   ociOptions: OCIProviderOptions | undefined
 ): Record<string, unknown> {
   const functionTools = options.tools?.filter((tool) => tool.type === 'function') ?? [];
+  const tokenLimit = options.maxOutputTokens;
+  const useMaxCompletionTokens = modelId.includes('gpt-5') || modelId.includes('gpt-oss');
 
   return {
     model: modelId,
     messages: messages.map(convertMessageToOpenAICompatibleFormat),
     stream: true,
-    max_tokens: options.maxOutputTokens,
+    ...(tokenLimit !== undefined
+      ? useMaxCompletionTokens
+        ? { max_completion_tokens: tokenLimit }
+        : { max_tokens: tokenLimit }
+      : {}),
     temperature: options.temperature,
     top_p: options.topP,
     stop: options.stopSequences,
